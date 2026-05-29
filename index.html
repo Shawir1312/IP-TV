@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S.NET TV</title>
+    <!-- HLS.js -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <!-- Mpegts.js fallback for raw TS streams -->
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #video-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 8px;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .live-badge {
+            background-color: #e50914;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            animation: pulse 2s infinite;
+        }
+
+        #channel-name {
+            font-size: 18px;
+            font-weight: 500;
+        }
+
+        #notification {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            padding: 20px 30px;
+            border-radius: 10px;
+            z-index: 20;
+            text-align: center;
+            display: none;
+            border: 1px solid #444;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="video-container">
+        <div id="overlay">
+            <span class="live-badge">LIVE</span>
+            <span id="channel-name">Memuat Channel...</span>
+        </div>
+        <div id="notification">
+            <h3>⚠️ Stream Diperbarui</h3>
+            <p>Admin sedang mengganti channel. Player akan memuat ulang...</p>
+        </div>
+        <video id="video-player" controls autoplay playsinline></video>
+    </div>
+
+    <script>
+        const video = document.getElementById('video-player');
+        const channelNameEl = document.getElementById('channel-name');
+        const notification = document.getElementById('notification');
+        let currentUrl = '';
+        let lastUpdate = '';
+        let streamSource = '';
+        let sessionToken = '';
+
+        function getCookie(name) {
+            const value = `; ${document.cookie}`;
+            const parts = value.split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+        }
+
+        // Initialize Player
+        function initPlayer(url) {
+            // Check if stream is m3u8 (HLS) or raw TS/HTTP
+            // For proxy_stream.php, we'll try native playback first, then HLS, then MPEG-TS
+            if (Hls.isSupported()) {
+                const hls = new Hls();
+                hls.loadSource(streamSource);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, function () {
+                    video.play().catch(e => console.log('Autoplay prevented', e));
+                });
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    if (data.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                // try to recover network error
+                                console.log('fatal network error encountered, try to recover');
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log('fatal media error encountered, try to recover');
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS (Safari)
+                video.src = streamSource;
+                video.addEventListener('loadedmetadata', function () {
+                    video.play().catch(e => console.log('Autoplay prevented', e));
+                });
+            } else if (mpegts.getFeatureList().mseLivePlayback) {
+                // Fallback for raw MPEG-TS over HTTP
+                const player = mpegts.createPlayer({
+                    type: 'mse',
+                    isLive: true,
+                    url: streamSource
+                });
+                player.attachMediaElement(video);
+                player.load();
+                player.play().catch(e => console.log('Autoplay prevented', e));
+            } else {
+                video.src = streamSource;
+            }
+        }
+
+        // Fetch channel info
+        function fetchChannelInfo() {
+            fetch('admin/api.php?action=get_channel')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        channelNameEl.textContent = data.data.channel_name;
+
+                        // Check if channel changed
+                        if (lastUpdate && lastUpdate !== data.data.updated_at && data.data.stream_changed) {
+                            notification.style.display = 'block';
+                            setTimeout(() => {
+                                window.location.reload();
+                            }, 5000);
+                        } else {
+                            lastUpdate = data.data.updated_at;
+                            // Initialize player with real URL on first load
+                            if (!streamSource) {
+                                streamSource = data.data.stream_url;
+                                initPlayer(streamSource);
+                            }
+                        }
+                    }
+                })
+                .catch(err => console.error('Error fetching channel info:', err));
+        }
+
+        // Heartbeat Ping
+        function sendPing() {
+            if (!sessionToken) {
+                sessionToken = getCookie('session_token');
+            }
+            if (sessionToken) {
+                fetch('ping.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: sessionToken })
+                }).catch(err => console.error('Ping failed:', err));
+            }
+        }
+
+        // Init
+        fetchChannelInfo();
+
+        // Polling
+        setInterval(fetchChannelInfo, 5000); // Check channel changes every 5s
+        setInterval(sendPing, 10000); // Send heartbeat every 10s
+    </script>
+</body>
+
+</html>

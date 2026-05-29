@@ -1,0 +1,11 @@
+# Disable directory browsing
+Options -Indexes
+
+# Protect sensitive files and directories
+<FilesMatch "\.(json|log|ini|md)$">
+    Require all denied
+</FilesMatch>
+
+# Protect directories (just in case they don't have .gitkeep)
+RewriteEngine On
+RewriteRule ^(sessions|logs|cache)(/.*)?$ - [F]
